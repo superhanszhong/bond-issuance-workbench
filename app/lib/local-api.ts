@@ -161,14 +161,20 @@ export async function workbenchFetch(input: string, init: RequestInit = {}) {
         : [];
     if (!payload.datasetType || !payload.fileName || !batches.length) return json({ error: "上传数据不完整" }, 400);
     const existingByKey = new Map(state.records.filter(row => row.dataset_type === payload.datasetType).map(row => [recordKey({ tradeDate: row.trade_date, bondCode: row.bond_code }), row]));
-    let inserted = 0, updated = 0, unchanged = 0;
+    let inserted = 0, updated = 0, unchanged = 0, removed = 0;
     let nextId = state.records.reduce((maximum, row) => Math.max(maximum, row.id), 0) + 1;
     batches.forEach((batch) => {
       const importId = crypto.randomUUID();
       let batchChanges = 0;
+      const incomingLocalKeys = new Set<string>();
+      const coveredLocalDates = new Set<string>();
       batch.records.forEach((incoming) => {
         const normalized = { ...incoming, tradeDate: incoming.tradeDate || batch.tradeDate };
         const key = recordKey(normalized);
+        if (payload.datasetType === "local_bond") {
+          incomingLocalKeys.add(key);
+          if (normalized.tradeDate) coveredLocalDates.add(normalized.tradeDate);
+        }
         const existing = existingByKey.get(key);
         const merged = mergeRecord(normalized, existing);
         const expectedWeekStart = weekStartForRecord(normalized.tradeDate || batch.tradeDate, payload.datasetType!) || batch.weekStart;
@@ -186,10 +192,23 @@ export async function workbenchFetch(input: string, init: RequestInit = {}) {
         existingByKey.set(key, row);
         batchChanges += 1;
       });
+      if (payload.datasetType === "local_bond" && coveredLocalDates.size) {
+        const staleIds = new Set(state.records.filter((row) =>
+          row.dataset_type === "local_bond"
+          && coveredLocalDates.has(row.trade_date)
+          && !incomingLocalKeys.has(recordKey({ tradeDate: row.trade_date, bondCode: row.bond_code })))
+          .map((row) => row.id));
+        if (staleIds.size) {
+          state.records = state.records.filter((row) => !staleIds.has(row.id));
+          [...existingByKey.entries()].forEach(([key, row]) => { if (staleIds.has(row.id)) existingByKey.delete(key); });
+          removed += staleIds.size;
+          batchChanges += staleIds.size;
+        }
+      }
       if (batchChanges) state.imports.push({ id: importId, dataset_type: payload.datasetType!, trade_date: batch.tradeDate, week_start: batch.weekStart, file_name: payload.fileName!, record_count: batchChanges, created_at: new Date().toISOString() });
     });
     await writeState(state);
-    return json({ ok: true, inserted, updated, unchanged }, 201);
+    return json({ ok: true, inserted, updated, unchanged, removed }, 201);
   }
   return json({ error: "不支持的请求" }, 405);
 }

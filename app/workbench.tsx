@@ -47,9 +47,6 @@ type LatestDates = { local_bond?: string; spread?: string; maturity?: string; is
 type DatasetType = "local_bond" | "spread" | "maturity" | "issuance_plan";
 
 const SUMMARY_DRAFT_VERSION = "weekly-bond-summary-v3";
-const VERIFIED_LOCAL_ISSUANCE_TOTALS: Record<string, number> = {
-  "2026-08-24": 3376.7973,
-};
 
 function encodeSummaryDraft(text: string) {
   return `${SUMMARY_DRAFT_VERSION}\n${text}`;
@@ -415,12 +412,13 @@ export default function Workbench() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ datasetType: type, fileName: file.name, batches }),
       });
-      const payload = await response.json() as { error?: string; inserted?: number; updated?: number; unchanged?: number };
+      const payload = await response.json() as { error?: string; inserted?: number; updated?: number; unchanged?: number; removed?: number };
       if (!response.ok) throw new Error(payload.error || "保存失败");
       const added = payload.inserted || 0;
       const updated = payload.updated || 0;
       const unchanged = payload.unchanged || 0;
-      const result = `新增${added}条，更新${updated}条，保留${unchanged}条未变化记录`;
+      const removed = payload.removed || 0;
+      const result = `新增${added}条，更新${updated}条，清理${removed}条旧记录，保留${unchanged}条未变化记录`;
       setMessage(isHistoricalBase ? `历史数据已保存到本机：${groups.size} 个交易周，${result}` : `已入库：${result}`);
       await loadWeek();
     } catch (error) { setMessage(error instanceof Error ? error.message : "上传失败"); }
@@ -514,11 +512,6 @@ export default function Workbench() {
       const previousMaturityRecords = previousPayload.records.filter((row) => row.dataset_type === "maturity").map(normalize);
       const currentLocalRecords = (currentLocalPayload.records || []).map(normalize);
       const ytdLocalRecords = (ytdLocalPayload.records || []).map(normalize);
-      const verifiedLocalTotal = VERIFIED_LOCAL_ISSUANCE_TOTALS[weekStart];
-      const currentLocalTotal = currentLocalRecords.reduce((sum, row) => sum + (row.amount || 0), 0);
-      if (verifiedLocalTotal !== undefined && Math.abs(currentLocalTotal - verifiedLocalTotal) > 0.00005) {
-        throw new Error(`本周地方债明细当前合计${currentLocalTotal.toFixed(4)}亿元，与核定值${verifiedLocalTotal.toFixed(4)}亿元不一致，请重新上传最新地方债发行计划后再生成`);
-      }
       const rateTotal = rateMaturityRecords.reduce((sum, row) => sum + (row.amount || 0), 0);
       const localDaily = maturityDailyTotals(localMaturityRecords, weekStart);
       const previousRateMaturity = previousMaturityRecords.filter(row => maturityKind(row) === "rate").reduce((sum, row) => sum + (row.amount || 0), 0);
@@ -602,7 +595,7 @@ export default function Workbench() {
             </div>
             <input ref={localBondInput} hidden type="file" accept=".xlsx,.xlsm" onChange={e => { const file=e.target.files?.[0]; if(file) void upload(file,"local_bond"); e.currentTarget.value=""; }}/>
             <input ref={spreadInput} hidden type="file" accept=".xlsx,.xlsm" onChange={e => { const file=e.target.files?.[0]; if(file) void upload(file,"spread"); e.currentTarget.value=""; }}/>
-            <p>地方债发行计划与一二级表均采用增量识别：新增记录入库，同券同日记录按最新文件比对更新，未变化记录不重复保存。</p>
+            <p>地方债发行计划与一二级表均采用增量识别；地方债同发行日以最新文件为准，自动新增、更新并清理已取消或删除的旧记录。</p>
           </div>
           <div className="report-source-card">
             <div className="card-head"><div><span className="section-label">周报生成数据</span><h2>发行时段与到期明细</h2><p>发行Excel只补充上午/下午；到期Excel提供全部到期量、到期结构和净融资口径。</p></div><FileText/></div>
