@@ -59,6 +59,7 @@ function decodeSummaryDraft(text?: string) {
 
 const tabGroups = [
   { label: "工作台", items: [["overview", "首页"]] },
+  { label: "地方债", items: [["local", "日表转换"]] },
   { label: "利率债", items: [["spread", "一二级利差"], ["summary", "发行小结"], ["report", "周报生成"]] },
 ] as const;
 
@@ -66,6 +67,7 @@ type TabKey = (typeof tabGroups)[number]["items"][number][0];
 
 const viewCopy: Record<TabKey, { eyebrow: string; title: string; description: string }> = {
   overview: { eyebrow: "ISSUANCE DESK", title: "利率债一级工作台", description: "本周数据总览与文件入口" },
+  local: { eyebrow: "LOCAL BOND TOOL", title: "地方债日表转换", description: "独立生成每日地方债发行计划" },
   spread: { eyebrow: "PRIMARY / SECONDARY", title: "一二级利差分析", description: "按自选日期区间生成散点图" },
   summary: { eyebrow: "CLIENT COPY", title: "周报发行小结", description: "根据一二级表生成并复核客户版文字" },
   report: { eyebrow: "FINAL OUTPUT", title: "客户版周报生成", description: "使用发行、到期及一二级数据生成 Word" },
@@ -538,7 +540,7 @@ export default function Workbench() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">债</span><div><strong>利率债发行工作台</strong><small>Issuance Desk</small></div></div>
-        <nav>{tabGroups.map(group => <div className="nav-group" key={group.label}><span className="nav-group-label">{group.label}</span>{group.items.map(([key, label]) => <button key={key} className={active === key ? "nav-active" : ""} onClick={() => setActive(key)}>{key === "overview" ? <House/> : key === "spread" ? <BarChart3/> : <FileText/>}<span>{label}</span></button>)}</div>)}</nav>
+        <nav>{tabGroups.map(group => <div className="nav-group" key={group.label}><span className="nav-group-label">{group.label}</span>{group.items.map(([key, label]) => <button key={key} className={active === key ? "nav-active" : ""} onClick={() => setActive(key)}>{key === "overview" ? <House/> : key === "local" ? <FileSpreadsheet/> : key === "spread" ? <BarChart3/> : <FileText/>}<span>{label}</span></button>)}</div>)}</nav>
         <div className="side-note"><Check size={16}/><span>数据仅保存在本机<br/>可用备份在电脑间转移</span></div>
         <div className="backup-actions">
           <button onClick={downloadLocalBackup}><Download size={15}/>导出数据备份</button>
@@ -629,6 +631,17 @@ export default function Workbench() {
             <article><span>国债及政金债到期</span><strong>{rateMaturityRecords.reduce((sum,row)=>sum+(row.amount||0),0).toFixed(2)}</strong><small>亿元 · {rateMaturityRecords.length}条明细</small></article>
             <article><span>地方债到期</span><strong>{localMaturityRecords.reduce((sum,row)=>sum+(row.amount||0),0).toFixed(2)}</strong><small>亿元 · {localMaturityRecords.length}条明细</small></article>
           </div>
+        </section>}
+
+        {active === "local" && <section className="converter-panel">
+          <div className="converter-intro">
+            <div><span className="section-label">LOCAL CONVERTER</span><h2>地方债日表转换器</h2><p>拖入 DM 下载的“地方政府债+日期.xlsx”，自动下载每日发行计划并生成可复制文本。该工具独立运行，文件仅在当前浏览器中处理，不会写入首页的地方债发行数据库。</p></div>
+          </div>
+          <iframe
+            className="converter-frame"
+            title="地方债日表转换器"
+            src={`${process.env.NEXT_PUBLIC_BASE_PATH || ""}/local-bond-daily-converter.html`}
+          />
         </section>}
 
         {active === "spread" && <section className="panel focus-panel">
