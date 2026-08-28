@@ -114,6 +114,7 @@ export async function workbenchFetch(input: string, init: RequestInit = {}) {
     const payload = JSON.parse(String(init.body || "{}")) as {
       action?: string; datasetType?: string; tradeDate?: string; weekStart?: string; fileName?: string;
       records?: RecordPayload[]; summaryText?: string; reviewText?: string;
+      batches?: Array<{ tradeDate: string; weekStart: string; records: RecordPayload[] }>;
     };
     if (payload.action === "saveDraft") {
       if (!payload.weekStart) return json({ error: "周起始日无效" }, 400);
@@ -121,20 +122,38 @@ export async function workbenchFetch(input: string, init: RequestInit = {}) {
       await writeState(state);
       return json({ ok: true });
     }
-    if (!payload.datasetType || !payload.tradeDate || !payload.weekStart || !payload.fileName || !payload.records?.length) return json({ error: "上传数据不完整" }, 400);
+    const batches = payload.batches?.length
+      ? payload.batches.filter((batch) => batch.tradeDate && batch.weekStart && batch.records?.length)
+      : payload.tradeDate && payload.weekStart && payload.records?.length
+        ? [{ tradeDate: payload.tradeDate, weekStart: payload.weekStart, records: payload.records }]
+        : [];
+    if (!payload.datasetType || !payload.fileName || !batches.length) return json({ error: "上传数据不完整" }, 400);
     const existingByKey = new Map(state.records.filter(row => row.dataset_type === payload.datasetType).map(row => [recordKey({ tradeDate: row.trade_date, bondCode: row.bond_code }), row]));
-    const importId = crypto.randomUUID();
     let inserted = 0, updated = 0, unchanged = 0;
-    payload.records.forEach((incoming, index) => {
-      const normalized = { ...incoming, tradeDate: incoming.tradeDate || payload.tradeDate };
-      const existing = existingByKey.get(recordKey(normalized));
-      const merged = mergeRecord(normalized, existing);
-      if (!merged.changed) { unchanged += 1; return; }
-      const row = storedRecord(merged.record, { id: existing?.id || Date.now() * 1000 + index, importId, datasetType: payload.datasetType!, weekStart: payload.weekStart!, tradeDate: payload.tradeDate! });
-      if (existing) { state.records[state.records.indexOf(existing)] = row; updated += 1; }
-      else { state.records.push(row); inserted += 1; }
+    let nextId = state.records.reduce((maximum, row) => Math.max(maximum, row.id), 0) + 1;
+    batches.forEach((batch) => {
+      const importId = crypto.randomUUID();
+      let batchChanges = 0;
+      batch.records.forEach((incoming) => {
+        const normalized = { ...incoming, tradeDate: incoming.tradeDate || batch.tradeDate };
+        const key = recordKey(normalized);
+        const existing = existingByKey.get(key);
+        const merged = mergeRecord(normalized, existing);
+        if (!merged.changed) { unchanged += 1; return; }
+        const row = storedRecord(merged.record, { id: existing?.id || nextId++, importId, datasetType: payload.datasetType!, weekStart: batch.weekStart, tradeDate: batch.tradeDate });
+        if (existing) {
+          const position = state.records.findIndex((item) => item.id === existing.id);
+          if (position >= 0) state.records[position] = row;
+          updated += 1;
+        } else {
+          state.records.push(row);
+          inserted += 1;
+        }
+        existingByKey.set(key, row);
+        batchChanges += 1;
+      });
+      if (batchChanges) state.imports.push({ id: importId, dataset_type: payload.datasetType!, trade_date: batch.tradeDate, week_start: batch.weekStart, file_name: payload.fileName!, record_count: batchChanges, created_at: new Date().toISOString() });
     });
-    if (inserted || updated) state.imports.push({ id: importId, dataset_type: payload.datasetType, trade_date: payload.tradeDate, week_start: payload.weekStart, file_name: payload.fileName, record_count: inserted + updated, created_at: new Date().toISOString() });
     await writeState(state);
     return json({ ok: true, inserted, updated, unchanged }, 201);
   }
