@@ -47,6 +47,9 @@ type LatestDates = { local_bond?: string; spread?: string; maturity?: string; is
 type DatasetType = "local_bond" | "spread" | "maturity" | "issuance_plan";
 
 const SUMMARY_DRAFT_VERSION = "weekly-bond-summary-v3";
+const VERIFIED_LOCAL_ISSUANCE_TOTALS: Record<string, number> = {
+  "2026-08-24": 3376.7973,
+};
 
 function encodeSummaryDraft(text: string) {
   return `${SUMMARY_DRAFT_VERSION}\n${text}`;
@@ -496,17 +499,26 @@ export default function Workbench() {
       const mmdd = (d: string) => d.slice(5).replace("-", "");
       const previousStart = shiftWeek(weekStart, -1);
       const yearStart = `${weekStart.slice(0, 4)}-01-01`;
-      const [previousResponse, ytdLocalResponse] = await Promise.all([
+      const [previousResponse, currentLocalResponse, ytdLocalResponse] = await Promise.all([
         workbenchFetch(`/api/workbench?weekStart=${previousStart}`),
+        workbenchFetch(`/api/workbench?startDate=${weekStart}&endDate=${weekEnd}&datasetType=local_bond`),
         workbenchFetch(`/api/workbench?startDate=${yearStart}&endDate=${weekEnd}&datasetType=local_bond`),
       ]);
       const previousPayload = await previousResponse.json() as WeekData & { error?: string };
+      const currentLocalPayload = await currentLocalResponse.json() as { records?: StoredRecord[]; error?: string };
       const ytdLocalPayload = await ytdLocalResponse.json() as { records?: StoredRecord[]; error?: string };
       if (!previousResponse.ok) throw new Error(previousPayload.error || "读取上周数据失败");
+      if (!currentLocalResponse.ok) throw new Error(currentLocalPayload.error || "读取本周地方债数据失败");
       if (!ytdLocalResponse.ok) throw new Error(ytdLocalPayload.error || "读取地方债年度数据失败");
       const previousSpreadRecords = previousPayload.records.filter((row) => row.dataset_type === "spread").map(normalize);
       const previousMaturityRecords = previousPayload.records.filter((row) => row.dataset_type === "maturity").map(normalize);
+      const currentLocalRecords = (currentLocalPayload.records || []).map(normalize);
       const ytdLocalRecords = (ytdLocalPayload.records || []).map(normalize);
+      const verifiedLocalTotal = VERIFIED_LOCAL_ISSUANCE_TOTALS[weekStart];
+      const currentLocalTotal = currentLocalRecords.reduce((sum, row) => sum + (row.amount || 0), 0);
+      if (verifiedLocalTotal !== undefined && Math.abs(currentLocalTotal - verifiedLocalTotal) > 0.00005) {
+        throw new Error(`本周地方债明细当前合计${currentLocalTotal.toFixed(4)}亿元，与核定值${verifiedLocalTotal.toFixed(4)}亿元不一致，请重新上传最新地方债发行计划后再生成`);
+      }
       const rateTotal = rateMaturityRecords.reduce((sum, row) => sum + (row.amount || 0), 0);
       const localDaily = maturityDailyTotals(localMaturityRecords, weekStart);
       const previousRateMaturity = previousMaturityRecords.filter(row => maturityKind(row) === "rate").reduce((sum, row) => sum + (row.amount || 0), 0);
@@ -518,7 +530,7 @@ export default function Workbench() {
         localTotal: localMaturityRecords.reduce((sum, row) => sum + (row.amount || 0), 0),
         previousRateNet: previousMaturityRecords.length ? previousRateIssuance - previousRateMaturity : undefined,
       } : undefined;
-      const blob = await buildWeeklyReportBlob({ weekStart, summary, localRecords, spreadRecords, scheduleRecords: issuancePlanRecords, previousSpreadRecords, ytdLocalRecords, maturity });
+      const blob = await buildWeeklyReportBlob({ weekStart, summary, localRecords: currentLocalRecords, spreadRecords, scheduleRecords: issuancePlanRecords, previousSpreadRecords, ytdLocalRecords, maturity });
       const url = URL.createObjectURL(blob);
       const fileName = `利率债发行周报${weekStart.replaceAll("-", "")}-${mmdd(weekEnd)}.docx`;
       setReportDownload({ url, name: fileName });

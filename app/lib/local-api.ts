@@ -15,6 +15,33 @@ function validState(value: LocalState | null): value is LocalState {
   return Boolean(value?.imports && value?.records && value?.drafts);
 }
 
+function weekStartForRecord(tradeDate: string, datasetType: string) {
+  const match = tradeDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+  if (datasetType === "maturity") {
+    if (date.getDay() === 6) date.setDate(date.getDate() - 5);
+    if (date.getDay() === 0) date.setDate(date.getDate() - 6);
+  }
+  const weekday = date.getDay() || 7;
+  date.setDate(date.getDate() - weekday + 1);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeRecordWeeks(state: LocalState) {
+  let changed = false;
+  const records = state.records.map((row) => {
+    const expected = weekStartForRecord(row.trade_date, row.dataset_type);
+    if (!expected || expected === row.week_start) return row;
+    changed = true;
+    return { ...row, week_start: expected };
+  });
+  return { state: changed ? { ...state, records } : state, changed };
+}
+
 let databasePromise: Promise<IDBDatabase> | null = null;
 function openDatabase() {
   if (databasePromise) return databasePromise;
@@ -52,7 +79,11 @@ async function writeState(state: LocalState) {
 async function readState(): Promise<LocalState> {
   if (typeof window === "undefined") return emptyState();
   const indexed = await readIndexedState();
-  if (indexed) return indexed;
+  if (indexed) {
+    const normalized = normalizeRecordWeeks(indexed);
+    if (normalized.changed) await writeState(normalized.state);
+    return normalized.state;
+  }
   const legacy = localStorage.getItem(STORAGE_KEY);
   if (!legacy) return emptyState();
   let parsed: LocalState | null = null;
@@ -60,9 +91,10 @@ async function readState(): Promise<LocalState> {
     parsed = JSON.parse(legacy) as LocalState | null;
   } catch { return emptyState(); }
   if (!validState(parsed)) return emptyState();
-  await writeState(parsed);
+  const normalized = normalizeRecordWeeks(parsed);
+  await writeState(normalized.state);
   localStorage.removeItem(STORAGE_KEY);
-  return parsed;
+  return normalized.state;
 }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
@@ -139,8 +171,10 @@ export async function workbenchFetch(input: string, init: RequestInit = {}) {
         const key = recordKey(normalized);
         const existing = existingByKey.get(key);
         const merged = mergeRecord(normalized, existing);
-        if (!merged.changed) { unchanged += 1; return; }
-        const row = storedRecord(merged.record, { id: existing?.id || nextId++, importId, datasetType: payload.datasetType!, weekStart: batch.weekStart, tradeDate: batch.tradeDate });
+        const expectedWeekStart = weekStartForRecord(normalized.tradeDate || batch.tradeDate, payload.datasetType!) || batch.weekStart;
+        const metadataChanged = Boolean(existing && (existing.week_start !== expectedWeekStart || existing.trade_date !== normalized.tradeDate));
+        if (!merged.changed && !metadataChanged) { unchanged += 1; return; }
+        const row = storedRecord(merged.record, { id: existing?.id || nextId++, importId, datasetType: payload.datasetType!, weekStart: expectedWeekStart, tradeDate: normalized.tradeDate || batch.tradeDate });
         if (existing) {
           const position = state.records.findIndex((item) => item.id === existing.id);
           if (position >= 0) state.records[position] = row;
