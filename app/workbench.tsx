@@ -383,9 +383,16 @@ export default function Workbench() {
       const recordWeekOf = (row: ParsedBondRecord) => type === "maturity" ? maturityWeekStart(row.tradeDate) : mondayOf(row.tradeDate);
       const detectedWeeks = new Set(parsed.map(recordWeekOf));
       const isHistoricalBase = detectedWeeks.size > 1;
+      const latestStoredDate = latestDates[type];
+      const incrementalStart = latestStoredDate && (type === "spread" || type === "local_bond")
+        ? mondayOf(latestStoredDate)
+        : "";
+      const rowsToSync = isHistoricalBase && incrementalStart
+        ? parsed.filter((row) => row.tradeDate >= incrementalStart)
+        : parsed;
       const groups = new Map<string, ParsedBondRecord[]>();
       if (isHistoricalBase) {
-        parsed.forEach((row) => {
+        rowsToSync.forEach((row) => {
           const recordWeek = recordWeekOf(row);
           groups.set(recordWeek, [...(groups.get(recordWeek) || []), row]);
         });
@@ -394,7 +401,14 @@ export default function Workbench() {
         if (!inWeek.length) throw new Error(`文件中没有 ${displayWeek(weekStart)} 的记录`);
         groups.set(weekStart, inWeek);
       }
-      if (isHistoricalBase) setMessage(`已识别 ${groups.size} 个交易周，正在保存到本机数据库…`);
+      if (!groups.size) {
+        setMessage("文件中的数据已全部入库，无需重复同步");
+        return;
+      }
+      if (isHistoricalBase) {
+        const scope = incrementalStart ? `从 ${incrementalStart} 起增量核对` : "首次同步历史数据";
+        setMessage(`已识别 ${groups.size} 个待核对交易周（${scope}），正在保存到本机数据库…`);
+      }
       let added = 0;
       let updated = 0;
       let unchanged = 0;
@@ -415,7 +429,7 @@ export default function Workbench() {
           unchanged += payload.unchanged || 0;
         }
       }
-      await Promise.all(Array.from({ length: Math.min(6, entries.length) }, () => saveNext()));
+      await saveNext();
       const result = `新增${added}条，更新${updated}条，保留${unchanged}条未变化记录`;
       setMessage(isHistoricalBase ? `历史数据已保存到本机：${groups.size} 个交易周，${result}` : `已入库：${result}`);
       await loadWeek();

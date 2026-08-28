@@ -1,19 +1,69 @@
 import { mergeRecord, recordKey, type RecordPayload } from "./record-merge";
 
 const STORAGE_KEY = "bond-issuance-workbench-v1";
+const DATABASE_NAME = "bond-issuance-workbench";
+const DATABASE_VERSION = 1;
+const STATE_STORE = "state";
+const STATE_ID = "current";
 type LocalImport = { id: string; dataset_type: string; trade_date: string; week_start: string; file_name: string; record_count: number; created_at: string };
 type LocalRecord = Record<string, unknown> & { id: number; import_id: string; dataset_type: string; trade_date: string; week_start: string; bond_code: string; raw_json: string };
 type LocalState = { imports: LocalImport[]; records: LocalRecord[]; drafts: Record<string, { summary_text: string; review_text: string; updated_at: string }> };
 
 function emptyState(): LocalState { return { imports: [], records: [], drafts: {} }; }
-function readState(): LocalState {
-  if (typeof window === "undefined") return emptyState();
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null") as LocalState | null;
-    return parsed?.imports && parsed?.records && parsed?.drafts ? parsed : emptyState();
-  } catch { return emptyState(); }
+
+function validState(value: LocalState | null): value is LocalState {
+  return Boolean(value?.imports && value?.records && value?.drafts);
 }
-function writeState(state: LocalState) { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+let databasePromise: Promise<IDBDatabase> | null = null;
+function openDatabase() {
+  if (databasePromise) return databasePromise;
+  databasePromise = new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(STATE_STORE)) request.result.createObjectStore(STATE_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("本机数据库打开失败"));
+  });
+  return databasePromise;
+}
+
+async function readIndexedState() {
+  const database = await openDatabase();
+  return new Promise<LocalState | null>((resolve, reject) => {
+    const request = database.transaction(STATE_STORE, "readonly").objectStore(STATE_STORE).get(STATE_ID);
+    request.onsuccess = () => resolve(validState(request.result as LocalState | null) ? request.result as LocalState : null);
+    request.onerror = () => reject(request.error || new Error("本机数据库读取失败"));
+  });
+}
+
+async function writeState(state: LocalState) {
+  const database = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(STATE_STORE, "readwrite");
+    transaction.objectStore(STATE_STORE).put(state, STATE_ID);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error("本机数据库写入失败"));
+    transaction.onabort = () => reject(transaction.error || new Error("本机数据库写入失败"));
+  });
+}
+
+async function readState(): Promise<LocalState> {
+  if (typeof window === "undefined") return emptyState();
+  const indexed = await readIndexedState();
+  if (indexed) return indexed;
+  const legacy = localStorage.getItem(STORAGE_KEY);
+  if (!legacy) return emptyState();
+  let parsed: LocalState | null = null;
+  try {
+    parsed = JSON.parse(legacy) as LocalState | null;
+  } catch { return emptyState(); }
+  if (!validState(parsed)) return emptyState();
+  await writeState(parsed);
+  localStorage.removeItem(STORAGE_KEY);
+  return parsed;
+}
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
 function storedRecord(payload: RecordPayload, metadata: { id: number; importId: string; datasetType: string; weekStart: string; tradeDate: string }): LocalRecord {
@@ -29,7 +79,7 @@ function storedRecord(payload: RecordPayload, metadata: { id: number; importId: 
 
 export async function workbenchFetch(input: string, init: RequestInit = {}) {
   const url = new URL(input, window.location.href);
-  const state = readState();
+  const state = await readState();
   const method = (init.method || "GET").toUpperCase();
   if (method === "GET") {
     if (url.searchParams.get("meta") === "latest") {
@@ -57,7 +107,7 @@ export async function workbenchFetch(input: string, init: RequestInit = {}) {
     if (!importId) return json({ error: "缺少 importId" }, 400);
     state.imports = state.imports.filter(row => row.id !== importId);
     state.records = state.records.filter(row => row.import_id !== importId);
-    writeState(state);
+    await writeState(state);
     return json({ ok: true });
   }
   if (method === "POST") {
@@ -68,7 +118,7 @@ export async function workbenchFetch(input: string, init: RequestInit = {}) {
     if (payload.action === "saveDraft") {
       if (!payload.weekStart) return json({ error: "周起始日无效" }, 400);
       state.drafts[payload.weekStart] = { summary_text: payload.summaryText || "", review_text: payload.reviewText || "", updated_at: new Date().toISOString() };
-      writeState(state);
+      await writeState(state);
       return json({ ok: true });
     }
     if (!payload.datasetType || !payload.tradeDate || !payload.weekStart || !payload.fileName || !payload.records?.length) return json({ error: "上传数据不完整" }, 400);
@@ -85,14 +135,14 @@ export async function workbenchFetch(input: string, init: RequestInit = {}) {
       else { state.records.push(row); inserted += 1; }
     });
     if (inserted || updated) state.imports.push({ id: importId, dataset_type: payload.datasetType, trade_date: payload.tradeDate, week_start: payload.weekStart, file_name: payload.fileName, record_count: inserted + updated, created_at: new Date().toISOString() });
-    writeState(state);
+    await writeState(state);
     return json({ ok: true, inserted, updated, unchanged }, 201);
   }
   return json({ error: "不支持的请求" }, 405);
 }
 
-export function downloadLocalBackup() {
-  const blob = new Blob([JSON.stringify(readState())], { type: "application/json" });
+export async function downloadLocalBackup() {
+  const blob = new Blob([JSON.stringify(await readState())], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -103,6 +153,7 @@ export function downloadLocalBackup() {
 
 export async function restoreLocalBackup(file: File) {
   const parsed = JSON.parse(await file.text()) as LocalState;
-  if (!parsed?.imports || !parsed?.records || !parsed?.drafts) throw new Error("备份文件格式不正确");
-  writeState(parsed);
+  if (!validState(parsed)) throw new Error("备份文件格式不正确");
+  await writeState(parsed);
+  localStorage.removeItem(STORAGE_KEY);
 }
