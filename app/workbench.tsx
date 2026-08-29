@@ -11,6 +11,7 @@ import {
 } from "./lib/workbench";
 import { buildWeeklyReportBlob } from "./lib/report";
 import { downloadLocalBackup, restoreLocalBackup, workbenchFetch } from "./lib/local-api";
+import { SPREAD_CHART_LOGO_DATA_URL } from "./logo-data";
 
 type StoredRecord = ParsedBondRecord & {
   id: number;
@@ -248,6 +249,7 @@ function SpreadChart({ records, svgRef, startDate, endDate }: { records: ParsedB
         <rect width="1680" height="96" fill="#FAE7DA" />
         <text x="70" y="43" fontSize="34" fontWeight="700" fill="#9A5748">本周国债、政金债发行一二级利差散点图</text>
         <text x="70" y="76" fontSize="20" fill="#6B6662">交易日：{startDate} 至 {endDate}｜利差口径：综收－二级（bp）｜散点口径：单券</text>
+        <image href={SPREAD_CHART_LOGO_DATA_URL} x="1189" y="-33" width="571" height="158" preserveAspectRatio="xMidYMid meet" />
         <text x="70" y="140" fontSize="22" fill="#68717b">普通债券样本 <tspan fontSize="26" fontWeight="700" fill="#D28A4D">{normalized.length}只</tspan>　｜　正利差债券 <tspan fontSize="26" fontWeight="700" fill="#D28A4D">{normalized.filter(r => Number(r.spread) > 0).length}只</tspan>　｜　平均利差 <tspan fontSize="26" fontWeight="700" fill="#D28A4D">{avg.toFixed(2)}bp</tspan>　｜　已排除{excluded.some(row => /绿债|绿色/.test(row.remark || "")) ? "绿债、" : ""}浮息债和主题债 <tspan fontSize="26" fontWeight="700" fill="#D28A4D">{excluded.length}只</tspan></text>
         <rect x={chartLeft} y={chartTop} width={chartRight-chartLeft} height={Math.max(0, y(0)-chartTop)} fill="#FFFCFA" />
         {ticks.map((tick) => (
@@ -509,19 +511,15 @@ export default function Workbench() {
       if (!currentLocalResponse.ok) throw new Error(currentLocalPayload.error || "读取本周地方债数据失败");
       if (!ytdLocalResponse.ok) throw new Error(ytdLocalPayload.error || "读取地方债年度数据失败");
       const previousSpreadRecords = previousPayload.records.filter((row) => row.dataset_type === "spread").map(normalize);
-      const previousMaturityRecords = previousPayload.records.filter((row) => row.dataset_type === "maturity").map(normalize);
       const currentLocalRecords = (currentLocalPayload.records || []).map(normalize);
       const ytdLocalRecords = (ytdLocalPayload.records || []).map(normalize);
       const rateTotal = rateMaturityRecords.reduce((sum, row) => sum + (row.amount || 0), 0);
       const localDaily = maturityDailyTotals(localMaturityRecords, weekStart);
-      const previousRateMaturity = previousMaturityRecords.filter(row => maturityKind(row) === "rate").reduce((sum, row) => sum + (row.amount || 0), 0);
-      const previousRateIssuance = previousSpreadRecords.reduce((sum, row) => sum + (row.amount || 0), 0);
       const maturity = maturityRecords.length ? {
         rateTotal,
         rateBreakdown: rateMaturityBreakdown(rateMaturityRecords),
         localDaily,
         localTotal: localMaturityRecords.reduce((sum, row) => sum + (row.amount || 0), 0),
-        previousRateNet: previousMaturityRecords.length ? previousRateIssuance - previousRateMaturity : undefined,
       } : undefined;
       const blob = await buildWeeklyReportBlob({ weekStart, summary, localRecords: currentLocalRecords, spreadRecords, scheduleRecords: issuancePlanRecords, previousSpreadRecords, ytdLocalRecords, maturity });
       const url = URL.createObjectURL(blob);

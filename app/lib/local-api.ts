@@ -33,12 +33,28 @@ function weekStartForRecord(tradeDate: string, datasetType: string) {
 
 function normalizeRecordWeeks(state: LocalState) {
   let changed = false;
-  const records = state.records.map((row) => {
+  let records = state.records.map((row) => {
     const expected = weekStartForRecord(row.trade_date, row.dataset_type);
     if (!expected || expected === row.week_start) return row;
     changed = true;
     return { ...row, week_start: expected };
   });
+  const latestLocalByKey = new Map<string, LocalRecord>();
+  records.forEach((row) => {
+    if (row.dataset_type !== "local_bond" || !row.bond_code) return;
+    const key = recordKey({ tradeDate: row.trade_date, bondCode: row.bond_code });
+    const existing = latestLocalByKey.get(key);
+    if (!existing || row.id > existing.id) latestLocalByKey.set(key, row);
+  });
+  const deduplicated = records.filter((row) => {
+    if (row.dataset_type !== "local_bond" || !row.bond_code) return true;
+    const key = recordKey({ tradeDate: row.trade_date, bondCode: row.bond_code });
+    return latestLocalByKey.get(key)?.id === row.id;
+  });
+  if (deduplicated.length !== records.length) {
+    records = deduplicated;
+    changed = true;
+  }
   return { state: changed ? { ...state, records } : state, changed };
 }
 

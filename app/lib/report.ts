@@ -17,7 +17,6 @@ type ReportInput = {
     rateBreakdown: string;
     localDaily: Record<string, number>;
     localTotal?: number;
-    previousRateNet?: number;
   };
 };
 
@@ -31,9 +30,8 @@ const TEMPLATE_URL = `${process.env.NEXT_PUBLIC_BASE_PATH || ""}/templates/weekl
 const VERIFIED_RATE_FINANCING: Record<string, {
   maturity: number;
   net: number;
-  previousNet: number;
 }> = {
-  "2026-08-10": { maturity: 5853, net: -1643, previousNet: 3486.9 },
+  "2026-08-10": { maturity: 5853, net: -1643 },
 };
 
 function mmdd(date: string) { return date.slice(5).replace("-", ""); }
@@ -176,7 +174,7 @@ function planLabel(row: ParsedBondRecord) {
     return "附息国债";
   }
   const short = row.bondType === "国开债" ? "国开" : row.bondType === "口行债" ? "进出" : row.bondType === "农发债" ? "农发" : row.bondType || "利率债";
-  return (row.summaryMeta?.route === "报价发行" || row.issuanceRoute === "报价发行") ? `${short}清发（报价）` : short;
+  return (row.summaryMeta?.route === "报价发行" || row.issuanceRoute === "报价发行") ? `${short}（报价）` : short;
 }
 export function planSession(row: ParsedBondRecord): "上午" | "下午" {
   if (row.summaryMeta?.route === "报价发行" || row.issuanceRoute === "报价发行" || /清发|报价/.test(row.remark || "")) return "上午";
@@ -210,7 +208,7 @@ function varietyTotals(rows: ParsedBondRecord[]) {
   const order = ["贴现国债", "农发", "国开", "进出", "超长特国", "附息国债"];
   const totals = new Map<string, number>();
   rows.forEach((row) => {
-    const label = planLabel(row).replace("清发（报价）", "");
+    const label = planLabel(row).replace("（报价）", "");
     totals.set(label, (totals.get(label) || 0) + (row.amount || 0));
   });
   return order.filter((label) => totals.has(label)).map((label) => `${label}:${text(totals.get(label))}亿`).join("　");
@@ -243,11 +241,6 @@ function reportDates(weekStart: string) {
     const date = new Date(`${weekStart}T12:00:00`); date.setDate(date.getDate() + index);
     return date.toISOString().slice(0, 10);
   });
-}
-function previousWeekStart(weekStart: string) {
-  const date = new Date(`${weekStart}T12:00:00`);
-  date.setDate(date.getDate() - 7);
-  return date.toISOString().slice(0, 10);
 }
 function reviewValues(row: ParsedBondRecord[]) {
   return row.map((item) => [
@@ -297,7 +290,6 @@ export async function buildWeeklyReportBlob({
   const change = previousAmount ? (currentAmount - previousAmount) / previousAmount * 100 : null;
   const direction = change === null ? "" : change >= 0 ? `，较上周增加${Math.abs(change).toFixed(2)}%` : `，较上周减少${Math.abs(change).toFixed(2)}%`;
   const verifiedCurrent = VERIFIED_RATE_FINANCING[weekStart];
-  const verifiedPrevious = VERIFIED_RATE_FINANCING[previousWeekStart(weekStart)];
   const referenceWeek = Boolean(verifiedCurrent);
   const ytdReplacement = amount(ytdLocalRecords.filter((row) => localNature(row) === "置换债"));
 
@@ -306,13 +298,9 @@ export async function buildWeeklyReportBlob({
   if (maturity) {
     const rateMaturity = verifiedCurrent?.maturity ?? maturity.rateTotal;
     const net = verifiedCurrent?.net ?? currentAmount - rateMaturity;
-    const priorNet = verifiedCurrent?.previousNet ?? verifiedPrevious?.net ?? maturity.previousRateNet;
-    const netDirection = priorNet === undefined ? "" : net >= priorNet ? "增加" : "减少";
-    const comparison = priorNet === undefined ? "" : `，净融资较上周${netDirection}（上周净融资额${text(priorNet)}亿）`;
-    rateSummary += `本周国债政金债偿还${text(rateMaturity)}亿（不包含凭证式国债）；净融资${text(net)}亿${comparison}。`;
+    rateSummary += `本周国债政金债偿还${text(rateMaturity)}亿（不包含凭证式国债）；净融资${text(net)}亿。`;
   } else if (verifiedCurrent) {
-    const netDirection = verifiedCurrent.net >= verifiedCurrent.previousNet ? "增加" : "减少";
-    rateSummary += `本周国债政金债偿还${text(verifiedCurrent.maturity)}亿（不包含凭证式国债）；净融资${text(verifiedCurrent.net)}亿，净融资较上周${netDirection}（上周净融资额${text(verifiedCurrent.previousNet)}亿）。`;
+    rateSummary += `本周国债政金债偿还${text(verifiedCurrent.maturity)}亿（不包含凭证式国债）；净融资${text(verifiedCurrent.net)}亿。`;
   }
   rewriteParagraph(paragraphs[2], rateSummary);
   const localTotal = amount(localRecords);
